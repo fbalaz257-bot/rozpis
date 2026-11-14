@@ -7,7 +7,8 @@ const TZ = 'Europe/Prague';
 const SCOPE = 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly';
 // Client ID nie je tajný údaj – je viditeľný v každej prihlasovacej adrese.
 const DEFAULT_CLIENT_ID = '394553646019-npjt6m9166n3e90b9n374tsb5hog7rv8.apps.googleusercontent.com';
-const DEFAULT_CALENDAR_NAME = 'Julka a Feri';
+const DEFAULT_CALENDAR_NAME = 'Julka a Ferko';
+const CALENDAR_NAME_PREFIX = 'julka a fer'; // sedí na „Julka a Ferko“ aj „Julka a Feri“
 const API = 'https://www.googleapis.com/calendar/v3';
 const K = { settings: 'rozpis.settings', token: 'rozpis.token', session: 'rozpis.session', resume: 'rozpis.resume', state: 'rozpis.oauthState', saved: 'rozpis.saved', addr: 'rozpis.addresses' };
 
@@ -179,7 +180,7 @@ async function loadCalendars() {
   } while (pageToken);
   calendars = out;
   if (!calendars.some((c) => c.id === settings.calendarId)) {
-    const byName = calendars.find((c) => c.name.trim().toLowerCase() === DEFAULT_CALENDAR_NAME.toLowerCase());
+    const byName = calendars.find((c) => c.name.trim().toLowerCase().startsWith(CALENDAR_NAME_PREFIX));
     settings.calendarId = byName ? byName.id : '';
     store.set(localStorage, K.settings, settings);
   }
