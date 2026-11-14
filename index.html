@@ -7,7 +7,7 @@
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#0f5c63">
 <meta name="robots" content="noindex">
-<title>Rozpis do kalendára</title>
+<title>Rozpis služieb</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -102,6 +102,7 @@
   .maplink { color: var(--accent); text-decoration: none; font-size: 15px; overflow-wrap: anywhere; padding: 6px 0; }
   .addr-edit { margin-top: 6px; }
   .hist-toggle { margin: 22px 0 6px; }
+  .agenda-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .hist-toggle .btn { color: var(--muted); font-size: 14.5px; }
   .bar .two { display: flex; gap: 8px; }
   .bar .two .btn { flex: 1; padding-left: 8px; padding-right: 8px; }
@@ -110,7 +111,7 @@
 </head>
 <body>
 <header class="top">
-  <h1>Rozpis do kalendára</h1>
+  <h1>Rozpis služieb</h1>
   <button id="btnAuth" type="button">Prihlásiť</button>
   <button id="btnSettings" type="button" aria-label="Nastavenia">Nastavenia</button>
 </header>
@@ -124,7 +125,11 @@
   <div id="notice"></div>
 
   <section id="agenda" hidden>
-    <h2 id="agendaTitle" style="margin:6px 2px 0">Moje služby</h2>
+    <div class="agenda-head">
+      <h2 id="agendaTitle" style="margin:6px 2px 0">Moje služby</h2>
+      <button class="edit" id="btnRefresh" type="button">Obnoviť</button>
+    </div>
+    <div class="muted small" id="syncInfo" style="margin:0 2px 4px"></div>
     <div id="agendaList"></div>
   </section>
 
@@ -161,10 +166,7 @@
   <div class="inner">
     <div class="count" id="count"></div>
     <progress id="prog" max="1" value="0" hidden></progress>
-    <div class="two">
-      <button class="btn primary" id="btnSaveApp" type="button">Uložiť do appky</button>
-      <button class="btn" id="btnImport" type="button">Aj do Google Kalendára</button>
-    </div>
+    <button class="btn primary" id="btnSaveApp" type="button">Uložiť</button>
   </div>
 </div>
 
@@ -181,10 +183,7 @@
     <button class="btn" id="btnExport" type="button">Zálohovať adresy</button>
     <label class="btn" style="text-align:center">Obnoviť zo zálohy<input id="fileImport" type="file" accept="application/json,.json" hidden></label>
   </div>
-  <p class="muted small" style="margin:4px 0 0">Služby aj adresy sú uložené len v tomto zariadení. Záloha je súbor, ktorý si môžeš odložiť.</p>
-  <div class="row-btns" style="margin-top:10px">
-    <button class="btn danger" id="btnClearSaved" type="button">Vymazať uložené služby a históriu</button>
-  </div>
+  <p class="muted small" style="margin:4px 0 0">Služby aj adresy sú uložené v zdieľanom Google kalendári, takže ich vidíte obaja. Záloha je súbor s adresami, ktorý si môžeš odložiť.</p>
 
   <details style="margin-top:14px">
     <summary class="small">Čo zadať v Google Cloud Console</summary>
