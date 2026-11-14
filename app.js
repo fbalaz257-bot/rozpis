@@ -4,7 +4,10 @@ import { parseSchedulePdf, workerNames, rowsForWorker } from './parser.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('./pdf.worker.min.mjs', import.meta.url).href;
 
 const TZ = 'Europe/Prague';
-const SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+const SCOPE = 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly';
+// Client ID nie je tajný údaj – je viditeľný v každej prihlasovacej adrese.
+const DEFAULT_CLIENT_ID = '394553646019-npjt6m9166n3e90b9n374tsb5hog7rv8.apps.googleusercontent.com';
+const DEFAULT_CALENDAR_NAME = 'Julka a Feri';
 const API = 'https://www.googleapis.com/calendar/v3';
 const K = { settings: 'rozpis.settings', token: 'rozpis.token', session: 'rozpis.session', resume: 'rozpis.resume', state: 'rozpis.oauthState' };
 
@@ -17,7 +20,10 @@ const store = {
 };
 
 // ---------- Stav ----------
-let settings = Object.assign({ clientId: '', calendarId: 'primary', defaultName: 'BJ' }, store.get(localStorage, K.settings) || {});
+let settings = Object.assign({ clientId: DEFAULT_CLIENT_ID, calendarId: '', defaultName: 'BJ' }, store.get(localStorage, K.settings) || {});
+if (!settings.clientId) settings.clientId = DEFAULT_CLIENT_ID;
+if (settings.calendarId === 'primary') settings.calendarId = '';
+let calendars = []; // kalendáre, do ktorých môže prihlásený účet zapisovať
 let token = store.get(localStorage, K.token);
 let S = { fileName: '', events: [], name: '', rows: [] }; // rozpracovaný rozpis
 let editing = -1;
@@ -54,6 +60,7 @@ function signIn() {
 
 function signOut() {
   token = null;
+  calendars = [];
   store.del(localStorage, K.token);
   renderAuth();
 }
@@ -95,6 +102,38 @@ async function gfetch(path, opts = {}) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((body.error && body.error.message) || 'HTTP ' + res.status);
   return body;
+}
+
+// ---------- Výber kalendára ----------
+async function loadCalendars() {
+  if (!signedIn()) { calendars = []; return; }
+  const out = [];
+  let pageToken = '';
+  do {
+    const q = new URLSearchParams({ minAccessRole: 'writer', maxResults: '250' });
+    if (pageToken) q.set('pageToken', pageToken);
+    const page = await gfetch(`/users/me/calendarList?${q}`);
+    for (const c of page.items || []) out.push({ id: c.id, name: c.summaryOverride || c.summary || c.id, primary: !!c.primary });
+    pageToken = page.nextPageToken || '';
+  } while (pageToken);
+  calendars = out;
+  if (!calendars.some((c) => c.id === settings.calendarId)) {
+    const byName = calendars.find((c) => c.name.trim().toLowerCase() === DEFAULT_CALENDAR_NAME.toLowerCase());
+    settings.calendarId = byName ? byName.id : '';
+    store.set(localStorage, K.settings, settings);
+  }
+}
+
+function renderCalendars() {
+  const sel = $('cal');
+  if (!signedIn()) {
+    sel.innerHTML = `<option value="">${esc(DEFAULT_CALENDAR_NAME)} (po prihlásení)</option>`;
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  sel.innerHTML = (settings.calendarId ? '' : '<option value="">— vyber kalendár —</option>') +
+    calendars.map((c) => `<option value="${esc(c.id)}"${c.id === settings.calendarId ? ' selected' : ''}>${esc(c.name)}${c.primary ? ' (hlavný)' : ''}</option>`).join('');
 }
 
 // ---------- Dátum a čas ----------
@@ -157,8 +196,20 @@ async function runImport() {
   const todo = picked.filter((r) => eventTimes(r));
   if (!todo.length) { renderList(); return; }
 
+  if (!calendars.length) {
+    try { await loadCalendars(); } catch (e) {
+      if (e instanceof AuthError) { signIn(); return; }
+      notice('err', 'Nepodarilo sa načítať zoznam kalendárov: ' + esc(e.message)); return;
+    }
+    renderCalendars();
+  }
+  if (!settings.calendarId) {
+    notice('warn', `Kalendár „${esc(DEFAULT_CALENDAR_NAME)}“ sa v prihlásenom účte nenašiel. Vyber kalendár v poli „Kalendár“ a spusti import znova.`);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    return;
+  }
   busy = true;
-  const cal = encodeURIComponent((settings.calendarId || 'primary').trim());
+  const cal = encodeURIComponent(settings.calendarId);
   const prog = $('prog');
   prog.hidden = false; prog.value = 0; prog.max = todo.length;
   $('btnImport').disabled = true;
@@ -218,6 +269,7 @@ async function runImport() {
 // ---------- Vykreslenie ----------
 function renderAuth() {
   $('btnAuth').textContent = signedIn() ? 'Prihlásené ✓' : 'Prihlásiť';
+  renderCalendars();
 }
 
 const STATUS = { ok: ['ok', 'Vytvorené'], dup: ['warn', 'Už v kalendári'], err: ['err', 'Chyba'] };
@@ -331,6 +383,7 @@ $('file').addEventListener('change', async (ev) => {
 });
 
 $('who').addEventListener('change', (e) => { setName(e.target.value); renderList(); });
+$('cal').addEventListener('change', (e) => { settings.calendarId = e.target.value; store.set(localStorage, K.settings, settings); renderCalendars(); });
 $('btnReset').addEventListener('click', () => { setName(S.name); renderList(); });
 $('btnDropOff').addEventListener('click', () => { S.rows = S.rows.filter((r) => r.imp); editing = -1; saveSession(); renderList(); });
 $('btnImport').addEventListener('click', runImport);
@@ -352,7 +405,6 @@ $('list').addEventListener('change', (e) => {
 
 function openSettings() {
   $('setClient').value = settings.clientId;
-  $('setCal').value = settings.calendarId;
   $('setName').value = settings.defaultName;
   $('showOrigin').textContent = location.origin;
   $('showRedirect').textContent = redirectUri();
@@ -364,8 +416,8 @@ $('btnCancel').addEventListener('click', () => $('dlg').close());
 $('btnSignOut').addEventListener('click', () => { signOut(); $('dlg').close(); renderBar(); });
 $('btnSave').addEventListener('click', () => {
   settings = {
-    clientId: $('setClient').value.trim(),
-    calendarId: $('setCal').value.trim() || 'primary',
+    clientId: $('setClient').value.trim() || DEFAULT_CLIENT_ID,
+    calendarId: settings.calendarId,
     defaultName: $('setName').value.trim(),
   };
   store.set(localStorage, K.settings, settings);
@@ -378,7 +430,7 @@ const saved = store.get(sessionStorage, K.session);
 if (saved && saved.events && saved.events.length) S = saved;
 handleAuthReturn();
 if (S.events.length) saveSession();
-if (!settings.clientId && !$('notice').innerHTML) {
-  notice('info', 'Čítanie PDF funguje hneď. Pre zápis do kalendára treba raz vložiť Google Client ID v <b>Nastaveniach</b>.');
-}
 render();
+if (signedIn()) {
+  loadCalendars().then(renderCalendars).catch(() => { /* zoznam sa načíta pri importe */ });
+}

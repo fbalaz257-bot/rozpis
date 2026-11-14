@@ -113,6 +113,8 @@
     <div class="card">
       <label class="field" for="who" style="margin-top:0">Pracovník (stĺpec Kdo)</label>
       <select id="who"></select>
+      <label class="field" for="cal">Kalendár</label>
+      <select id="cal"></select>
       <div class="row-btns" style="margin-top:10px">
         <button class="btn" id="btnDropOff" type="button">Odstrániť odznačené</button>
         <button class="btn" id="btnReset" type="button">Obnoviť pôvodný zoznam</button>
@@ -140,9 +142,7 @@
   <h2>Nastavenia</h2>
   <label class="field" for="setClient">Google OAuth Client ID (typ „Web application“)</label>
   <input type="text" id="setClient" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="1234567890-abc….apps.googleusercontent.com">
-  <label class="field" for="setCal">ID kalendára</label>
-  <input type="text" id="setCal" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="primary">
-  <p class="muted small" style="margin:4px 0 0">„primary“ = hlavný kalendár prihláseného účtu. Pre iný kalendár sem patrí jeho ID (zvyčajne e-mail).</p>
+  <p class="muted small" style="margin:4px 0 0">Client ID je už vyplnené. Kalendár sa vyberá na hlavnej obrazovke po prihlásení.</p>
   <label class="field" for="setName">Predvolený pracovník</label>
   <input type="text" id="setName" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="BJ">
 
