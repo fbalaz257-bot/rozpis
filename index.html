@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://www.googleapis.com; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#0f5c63">
+<meta name="robots" content="noindex">
+<title>Rozpis do kalendára</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root {
+    --bg: #f3f5f4; --card: #ffffff; --ink: #17242a; --muted: #5d6b70; --line: #dde3e2;
+    --accent: #0f5c63; --accent-ink: #ffffff; --soft: #e2efee;
+    --ok: #1d6b3a; --ok-bg: #e2f2e7; --warn: #8a5a00; --warn-bg: #fbf0d6; --err: #a12626; --err-bg: #fae3e3;
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10181b; --card: #1a2529; --ink: #e8eeee; --muted: #9aa9ad; --line: #2b3a3f;
+      --accent: #58b9c1; --accent-ink: #06262a; --soft: #1f3438;
+      --ok: #7fd59c; --ok-bg: #173022; --warn: #f0c56a; --warn-bg: #3a2e12; --err: #ff9c9c; --err-bg: #3d1b1b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+  header.top {
+    position: sticky; top: 0; z-index: 5; background: var(--accent); color: var(--accent-ink);
+    padding: calc(10px + env(safe-area-inset-top)) 16px 10px; display: flex; align-items: center; gap: 10px;
+  }
+  header.top h1 { font-size: 18px; margin: 0; flex: 1; font-weight: 650; letter-spacing: .1px; }
+  header.top button { background: transparent; color: inherit; border: 1px solid currentColor; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 14px; opacity: .95; }
+  main { max-width: 720px; margin: 0 auto; padding: 14px 14px 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 14px; }
+  h2 { font-size: 16px; margin: 0 0 8px; }
+  label.field { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=date], input[type=time], select {
+    width: 100%; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 12px; min-height: 44px;
+  }
+  button { font: inherit; cursor: pointer; }
+  .btn { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 10px; padding: 10px 14px; min-height: 44px; }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
+  .btn.danger { color: var(--err); }
+  .btn:disabled { opacity: .5; }
+  .row-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row-btns .btn { flex: 1 1 auto; }
+  .pick { display: block; text-align: center; border: 2px dashed var(--accent); color: var(--accent); border-radius: var(--radius); padding: 22px 14px; font-weight: 650; background: var(--soft); }
+  .pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .pick:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .banner { border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; font-size: 14.5px; }
+  .banner.info { background: var(--soft); }
+  .banner.ok { background: var(--ok-bg); color: var(--ok); }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); }
+  .banner.err { background: var(--err-bg); color: var(--err); }
+  .day { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 16px 2px 6px; }
+  .shift { display: grid; grid-template-columns: 34px 1fr auto; gap: 4px 8px; align-items: start; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 10px 10px 8px; margin-bottom: 8px; }
+  .shift.off { opacity: .55; }
+  .shift input[type=checkbox] { width: 24px; height: 24px; margin: 2px 0 0 4px; accent-color: var(--accent); }
+  .shift .time { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .shift .what { overflow-wrap: anywhere; }
+  .shift .edit { border: 0; background: transparent; color: var(--accent); padding: 4px 6px; min-height: 36px; font-size: 14px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .tag { font-size: 12.5px; background: var(--soft); border-radius: 999px; padding: 2px 9px; }
+  .tag.ok { background: var(--ok-bg); color: var(--ok); } .tag.warn { background: var(--warn-bg); color: var(--warn); } .tag.err { background: var(--err-bg); color: var(--err); }
+  .editor { grid-column: 1 / -1; border-top: 1px solid var(--line); margin-top: 8px; padding-top: 4px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--card); border-top: 1px solid var(--line); padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); }
+  .bar .inner { max-width: 720px; margin: 0 auto; }
+  .bar .btn { width: 100%; }
+  .bar .count { font-size: 13px; color: var(--muted); text-align: center; margin-bottom: 6px; }
+  progress { width: 100%; height: 8px; }
+  details.card summary { cursor: pointer; font-weight: 650; }
+  .scroll { overflow-x: auto; margin-top: 10px; }
+  table { border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+  th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  dialog { border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); color: var(--ink); width: min(640px, calc(100vw - 24px)); padding: 16px; max-height: calc(100vh - 32px); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  code.copy { display: block; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; overflow-wrap: anywhere; user-select: all; }
+  ol.steps { padding-left: 20px; margin: 6px 0; font-size: 14.5px; }
+  ol.steps li { margin-bottom: 6px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Rozpis do kalendára</h1>
+  <button id="btnAuth" type="button">Prihlásiť</button>
+  <button id="btnSettings" type="button" aria-label="Nastavenia">Nastavenia</button>
+</header>
+
+<main>
+  <div id="notice"></div>
+
+  <label class="pick" id="pick">
+    <input id="file" type="file" accept="application/pdf,.pdf">
+    <span id="pickText">Vybrať PDF rozpis služieb</span>
+  </label>
+  <p class="muted small" id="fileInfo" style="margin: 8px 2px 14px">PDF sa spracuje priamo v tomto zariadení, nikam sa neodosiela.</p>
+
+  <section id="work" hidden>
+    <div class="card">
+      <label class="field" for="who" style="margin-top:0">Pracovník (stĺpec Kdo)</label>
+      <select id="who"></select>
+      <div class="row-btns" style="margin-top:10px">
+        <button class="btn" id="btnDropOff" type="button">Odstrániť odznačené</button>
+        <button class="btn" id="btnReset" type="button">Obnoviť pôvodný zoznam</button>
+      </div>
+    </div>
+
+    <div id="list"></div>
+
+    <details class="card" id="allBox">
+      <summary>Kompletný rozpis zo súboru (všetky mená)</summary>
+      <div class="scroll" id="allTable"></div>
+    </details>
+  </section>
+</main>
+
+<div class="bar" id="bar" hidden>
+  <div class="inner">
+    <div class="count" id="count"></div>
+    <progress id="prog" max="1" value="0" hidden></progress>
+    <button class="btn primary" id="btnImport" type="button">Importovať do Google Kalendára</button>
+  </div>
+</div>
+
+<dialog id="dlg">
+  <h2>Nastavenia</h2>
+  <label class="field" for="setClient">Google OAuth Client ID (typ „Web application“)</label>
+  <input type="text" id="setClient" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="1234567890-abc….apps.googleusercontent.com">
+  <label class="field" for="setCal">ID kalendára</label>
+  <input type="text" id="setCal" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="primary">
+  <p class="muted small" style="margin:4px 0 0">„primary“ = hlavný kalendár prihláseného účtu. Pre iný kalendár sem patrí jeho ID (zvyčajne e-mail).</p>
+  <label class="field" for="setName">Predvolený pracovník</label>
+  <input type="text" id="setName" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="BJ">
+
+  <details style="margin-top:14px">
+    <summary class="small">Čo zadať v Google Cloud Console</summary>
+    <ol class="steps">
+      <li>APIs &amp; Services → Credentials → Create credentials → OAuth client ID → <b>Web application</b>.</li>
+      <li>Authorized JavaScript origins: <code class="copy" id="showOrigin"></code></li>
+      <li>Authorized redirect URIs: <code class="copy" id="showRedirect"></code></li>
+      <li>Vzniknuté Client ID vložiť hore a uložiť.</li>
+    </ol>
+  </details>
+
+  <div class="row-btns" style="margin-top:16px">
+    <button class="btn" id="btnSignOut" type="button">Odhlásiť</button>
+    <button class="btn" id="btnCancel" type="button">Zavrieť</button>
+    <button class="btn primary" id="btnSave" type="button">Uložiť</button>
+  </div>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
