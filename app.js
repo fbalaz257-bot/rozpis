@@ -124,6 +124,7 @@ function clientKey(udalost) {
   return k === 'Zaúčanie' || k === 'Služba / Udalosť' ? '' : k;
 }
 const addressFor = (udalost) => { const k = clientKey(udalost); return (k && addresses[k]) || ''; };
+const COORD_RE = /^-?\d{1,2}\.\d+,\s*-?\d{1,3}\.\d+$/; // adresa zadaná ako súradnice z aktuálnej polohy
 const mapsUrl = (addr) => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr);
 function nowParts() {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
@@ -443,13 +444,17 @@ function agendaCard(r, past) {
       <label class="field">Adresa – ${esc(key)}</label>
       <input type="text" class="addr-input" data-key="${esc(key)}" value="${esc(addr)}" autocomplete="off" placeholder="Ulica 12, Mesto">
       <div class="row-btns" style="margin-top:8px">
+        <button class="btn" type="button" data-act="addr-geo">📍 Použiť aktuálnu polohu</button>
+      </div>
+      <div class="muted small geo-msg" role="status"></div>
+      <div class="row-btns" style="margin-top:8px">
         <button class="btn primary" type="button" data-act="addr-save" data-key="${esc(key)}">Uložiť adresu</button>
         <button class="btn" type="button" data-act="addr-cancel">Zrušiť</button>
       </div>
     </div>`;
   } else if (key && addr) {
     addrHtml = `<div class="addr">
-      <a class="maplink" href="${esc(mapsUrl(addr))}" target="_blank" rel="noopener noreferrer">📍 ${esc(addr)}</a>
+      <a class="maplink" href="${esc(mapsUrl(addr))}" target="_blank" rel="noopener noreferrer">📍 ${esc(COORD_RE.test(addr) ? `Uložená poloha (${addr})` : addr)}</a>
       ${past ? '' : `<button class="edit" type="button" data-act="addr-edit" data-key="${esc(key)}">Zmeniť</button>`}
     </div>`;
   } else if (key && !past) {
@@ -586,6 +591,7 @@ $('agendaList').addEventListener('click', (e) => {
   const t = e.target.closest('[data-act]');
   if (!t) return;
   const act = t.dataset.act;
+  if (act === 'addr-geo') { useCurrentPosition(t.closest('.addr-edit')); return; }
   if (act === 'toggle-hist') histOpen = !histOpen;
   if (act === 'addr-edit') addrEditing = t.dataset.key;
   if (act === 'addr-cancel') addrEditing = null;
@@ -600,6 +606,24 @@ $('agendaList').addEventListener('click', (e) => {
 $('agendaList').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.classList.contains('addr-input')) { setAddress(e.target.dataset.key, e.target.value); addrEditing = null; renderAgenda(); }
 });
+
+/** Vyplní do poľa adresy súradnice aktuálnej polohy telefónu (uloží sa až tlačidlom Uložiť). */
+function useCurrentPosition(box) {
+  const msg = box.querySelector('.geo-msg');
+  const inp = box.querySelector('.addr-input');
+  if (!navigator.geolocation) { msg.textContent = 'Toto zariadenie polohu neposkytuje.'; return; }
+  msg.textContent = 'Zisťujem polohu…';
+  navigator.geolocation.getCurrentPosition((pos) => {
+    if (!inp.isConnected) return;
+    inp.value = `${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)}`;
+    msg.textContent = `Poloha zistená s presnosťou asi ${Math.round(pos.coords.accuracy)} m. Ťukni na „Uložiť adresu“.`;
+  }, (err) => {
+    if (!msg.isConnected) return;
+    msg.textContent = err.code === 1
+      ? 'Prístup k polohe je zakázaný. Povoľ ho pre túto stránku v nastaveniach prehliadača.'
+      : 'Polohu sa nepodarilo zistiť. Skús to vonku alebo so zapnutou GPS.';
+  }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+}
 
 // Záloha a obnova adries (súbor ostáva v zariadení)
 $('btnExport').addEventListener('click', () => {
