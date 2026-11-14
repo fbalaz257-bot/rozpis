@@ -33,8 +33,8 @@ let saved = store.get(localStorage, K.saved) || { name: '', rows: [] };
 if (!Array.isArray(saved.rows)) saved = { name: '', rows: [] };
 let addresses = store.get(localStorage, K.addr) || {};
 let view = 'upload'; // 'agenda' | 'upload'
-let showOld = false;
 let addrEditing = null;
+let shownDay = '';
 
 const signedIn = () => !!(token && token.t && token.exp > Date.now() + 60000);
 const saveSession = () => store.set(sessionStorage, K.session, S);
@@ -119,15 +119,28 @@ function clientKey(udalost) {
 }
 const addressFor = (udalost) => { const k = clientKey(udalost); return (k && addresses[k]) || ''; };
 const mapsUrl = (addr) => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr);
-function todayIso() {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+function nowParts() {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+  const g = (t) => parts.find((x) => x.type === t).value;
+  return { date: `${g('year')}-${g('month')}-${g('day')}`, time: `${g('hour')}:${g('minute')}` };
+}
+const todayIso = () => nowParts().date;
+
+/** Vymaže uložené služby z minulých dní (služba cez polnoc ostane, kým neskončí). */
+function purgePast() {
+  const { date: today, time } = nowParts();
+  const yesterday = shiftDays(today, -1);
+  const before = saved.rows.length;
+  saved.rows = saved.rows.filter((r) => r.date >= today ||
+    (r.date === yesterday && validTime(r.od) && validTime(r.do) && r.do < r.od && time < r.do));
+  if (saved.rows.length !== before) store.set(localStorage, K.saved, saved);
+  return before - saved.rows.length;
 }
 
 /** Uloží zaškrtnuté služby z nahraného rozpisu; dni z toho istého rozpisu nahradí. */
 function saveToApp() {
   const covered = new Set(S.events.map((e) => e.date));
-  const limit = shiftDays(todayIso(), -120);
-  const keep = saved.rows.filter((r) => !covered.has(r.date) && r.date >= limit);
+  const keep = saved.rows.filter((r) => !covered.has(r.date));
   const add = S.rows.filter((r) => r.imp && validDate(r.date)).map((r) => ({
     date: r.date, od: r.od, do: r.do, udalost: r.udalost, pasmo: r.pasmo, pozn: r.pozn, kdo: r.kdo, ...(r.merged ? { merged: true } : {}),
   }));
@@ -140,8 +153,10 @@ function saveToApp() {
   }).sort((a, b) => a.date.localeCompare(b.date) || a.od.localeCompare(b.od));
   saved = { name: S.name, rows };
   store.set(localStorage, K.saved, saved);
+  purgePast();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  return add.length;
+  const today = todayIso();
+  return { total: add.length, upcoming: add.filter((r) => r.date >= today).length };
 }
 
 function setAddress(key, value) {
@@ -261,11 +276,11 @@ async function runImport() {
   const prog = $('prog');
   prog.hidden = false; prog.value = 0; prog.max = todo.length;
   $('btnImport').disabled = true;
-  let created = 0; let dup = 0; let err = bad.length;
+  let created = 0; let dup = 0; let updated = 0; let err = bad.length;
   try {
     // Existujúce udalosti v danom období – kvôli duplicitám
     const dates = todo.map((r) => r.date).sort();
-    const seen = new Set();
+    const seen = new Map(); // kľúč udalosti -> { id, location }
     let pageToken = '';
     do {
       const q = new URLSearchParams({
@@ -277,7 +292,8 @@ async function runImport() {
       const page = await gfetch(`/calendars/${cal}/events?${q}`);
       for (const ev of page.items || []) {
         if (ev.status === 'cancelled' || !ev.start || !ev.start.dateTime || !ev.end || !ev.end.dateTime) continue;
-        seen.add(`${ev.summary || ''}|${ev.start.dateTime.slice(0, 16)}|${ev.end.dateTime.slice(0, 16)}`);
+        const k = `${ev.summary || ''}|${ev.start.dateTime.slice(0, 16)}|${ev.end.dateTime.slice(0, 16)}`;
+        if (!seen.has(k)) seen.set(k, { id: ev.id, location: ev.location || '' });
       }
       pageToken = page.nextPageToken || '';
     } while (pageToken);
@@ -287,12 +303,23 @@ async function runImport() {
       const body = eventBody(r);
       const key = `${body.summary}|${body.start.dateTime.slice(0, 16)}|${body.end.dateTime.slice(0, 16)}`;
       $('count').textContent = `Importujem ${i + 1} / ${todo.length}…`;
-      if (seen.has(key)) {
+      const ex = seen.get(key);
+      if (ex && body.location && !ex.location && ex.id) {
+        // udalosť už existuje, len jej chýba adresa
+        try {
+          await gfetch(`/calendars/${cal}/events/${encodeURIComponent(ex.id)}`, { method: 'PATCH', body: JSON.stringify({ location: body.location }) });
+          ex.location = body.location;
+          r.status = 'upd'; updated++;
+        } catch (e) {
+          if (e instanceof AuthError) throw e;
+          r.status = 'err'; r.msg = e.message; err++;
+        }
+      } else if (ex) {
         r.status = 'dup'; dup++;
       } else {
         try {
-          await gfetch(`/calendars/${cal}/events`, { method: 'POST', body: JSON.stringify(body) });
-          r.status = 'ok'; created++; seen.add(key);
+          const made = await gfetch(`/calendars/${cal}/events`, { method: 'POST', body: JSON.stringify(body) });
+          r.status = 'ok'; created++; seen.set(key, { id: made.id, location: body.location || '' });
         } catch (e) {
           if (e instanceof AuthError) throw e;
           r.status = 'err'; r.msg = e.message; err++;
@@ -301,7 +328,7 @@ async function runImport() {
       prog.value = i + 1;
     }
     saveToApp();
-    notice(err ? 'warn' : 'ok', `Import dokončený. Vytvorené: <b>${created}</b>, preskočené duplicity: <b>${dup}</b>, chyby: <b>${err}</b>. Služby sú uložené aj v appke.`);
+    notice(err ? 'warn' : 'ok', `Import dokončený. Vytvorené: <b>${created}</b>, doplnená adresa: <b>${updated}</b>, už v kalendári: <b>${dup}</b>, chyby: <b>${err}</b>. Služby sú uložené aj v appke.`);
   } catch (e) {
     if (e instanceof AuthError) notice('warn', 'Prihlásenie vypršalo. Ťukni na „Prihlásiť“ a import spusti znova – už vytvorené udalosti sa preskočia.');
     else notice('err', 'Import sa nepodaril: ' + esc(e.message));
@@ -321,7 +348,7 @@ function renderAuth() {
   renderCalendars();
 }
 
-const STATUS = { ok: ['ok', 'Vytvorené'], dup: ['warn', 'Už v kalendári'], err: ['err', 'Chyba'] };
+const STATUS = { ok: ['ok', 'Vytvorené'], upd: ['ok', 'Doplnená adresa'], dup: ['warn', 'Už v kalendári'], err: ['err', 'Chyba'] };
 
 function renderList() {
   const box = $('list');
@@ -377,17 +404,15 @@ function renderBar() {
 }
 
 function renderAgenda() {
+  purgePast();
   const today = todayIso();
+  shownDay = today;
   const tomorrow = shiftDays(today, 1);
-  const all = saved.rows;
-  const rows = showOld ? all : all.filter((r) => r.date >= today);
-  const older = all.length - all.filter((r) => r.date >= today).length;
+  const rows = saved.rows;
   $('agendaTitle').textContent = saved.name ? `Moje služby – ${saved.name}` : 'Moje služby';
   let html = '';
-  if (!all.length) {
-    html = '<div class="banner info">Zatiaľ tu nič nie je. V záložke „Nahrať rozpis“ vyber PDF a ťukni na „Uložiť do appky“.</div>';
-  } else if (!rows.length) {
-    html = '<div class="banner info">Žiadne nadchádzajúce služby. Nahraj nový rozpis.</div>';
+  if (!rows.length) {
+    html = '<div class="banner info">Žiadne nadchádzajúce služby. V záložke „Nahrať rozpis“ vyber PDF a ťukni na „Uložiť do appky“. Minulé dni sa o polnoci mažú.</div>';
   }
   let lastDay = null;
   rows.forEach((r) => {
@@ -430,9 +455,6 @@ function renderAgenda() {
       </div>
     </div>`;
   });
-  if (older > 0) {
-    html += `<div class="row-btns" style="margin:14px 0"><button class="btn" type="button" data-act="toggle-old">${showOld ? 'Skryť staršie služby' : `Zobraziť aj staršie (${older})`}</button></div>`;
-  }
   $('agendaList').innerHTML = html;
 }
 
@@ -506,8 +528,9 @@ $('btnImport').addEventListener('click', runImport);
 $('btnSaveApp').addEventListener('click', () => {
   const n = saveToApp();
   view = 'agenda';
-  showOld = !saved.rows.some((r) => r.date >= todayIso());
-  notice('ok', `Uložené do appky: <b>${n}</b> služieb pre ${esc(S.name)}.`);
+  const past = n.total - n.upcoming;
+  if (!n.upcoming) notice('warn', 'Tento rozpis je celý v minulosti, takže v Mojich službách z neho nič neostalo (minulé dni sa mažú).');
+  else notice('ok', `Uložené do appky: <b>${n.upcoming}</b> služieb pre ${esc(S.name)}${past ? ` (ďalších ${past} už prebehlo)` : ''}.`);
   render();
   window.scrollTo({ top: 0 });
 });
@@ -518,7 +541,6 @@ $('agendaList').addEventListener('click', (e) => {
   const t = e.target.closest('[data-act]');
   if (!t) return;
   const act = t.dataset.act;
-  if (act === 'toggle-old') showOld = !showOld;
   if (act === 'addr-edit') addrEditing = t.dataset.key;
   if (act === 'addr-cancel') addrEditing = null;
   if (act === 'addr-save') {
@@ -616,8 +638,17 @@ if (lastSession && lastSession.events && lastSession.events.length) S = lastSess
 const cameFromGoogle = /(access_token|error)=/.test(location.hash || '');
 handleAuthReturn();
 if (S.events.length) saveSession();
+purgePast();
 view = (cameFromGoogle && S.events.length) || !saved.rows.length ? 'upload' : 'agenda';
 render();
+// O polnoci (alebo po návrate do appky v iný deň) zmiznú včerajšie služby
+function dayCheck() {
+  if (todayIso() === shownDay) return;
+  purgePast();
+  if (view === 'agenda' && addrEditing === null) renderAgenda(); else shownDay = todayIso();
+}
+setInterval(dayCheck, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) dayCheck(); });
 if (signedIn()) {
   loadCalendars().then(renderCalendars).catch(() => { /* zoznam sa načíta pri importe */ });
 }
