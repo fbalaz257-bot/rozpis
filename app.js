@@ -9,7 +9,7 @@ const SCOPE = 'https://www.googleapis.com/auth/calendar.events https://www.googl
 const DEFAULT_CLIENT_ID = '394553646019-npjt6m9166n3e90b9n374tsb5hog7rv8.apps.googleusercontent.com';
 const DEFAULT_CALENDAR_NAME = 'Julka a Feri';
 const API = 'https://www.googleapis.com/calendar/v3';
-const K = { settings: 'rozpis.settings', token: 'rozpis.token', session: 'rozpis.session', resume: 'rozpis.resume', state: 'rozpis.oauthState' };
+const K = { settings: 'rozpis.settings', token: 'rozpis.token', session: 'rozpis.session', resume: 'rozpis.resume', state: 'rozpis.oauthState', saved: 'rozpis.saved', addr: 'rozpis.addresses' };
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -28,6 +28,13 @@ let token = store.get(localStorage, K.token);
 let S = { fileName: '', events: [], name: '', rows: [] }; // rozpracovaný rozpis
 let editing = -1;
 let busy = false;
+// Uložené služby a adresy zákazníkov – ostávajú len v tomto zariadení
+let saved = store.get(localStorage, K.saved) || { name: '', rows: [] };
+if (!Array.isArray(saved.rows)) saved = { name: '', rows: [] };
+let addresses = store.get(localStorage, K.addr) || {};
+let view = 'upload'; // 'agenda' | 'upload'
+let showOld = false;
+let addrEditing = null;
 
 const signedIn = () => !!(token && token.t && token.exp > Date.now() + 60000);
 const saveSession = () => store.set(sessionStorage, K.session, S);
@@ -104,6 +111,45 @@ async function gfetch(path, opts = {}) {
   return body;
 }
 
+// ---------- Uložené služby a adresy ----------
+/** Meno zákazníka ako kľúč adresára (bez prípony o zaúčaní). */
+function clientKey(udalost) {
+  const k = String(udalost || '').replace(/\s*\(Zaúčanie\)\s*$/, '').trim();
+  return k === 'Zaúčanie' || k === 'Služba / Udalosť' ? '' : k;
+}
+const addressFor = (udalost) => { const k = clientKey(udalost); return (k && addresses[k]) || ''; };
+const mapsUrl = (addr) => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr);
+function todayIso() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
+/** Uloží zaškrtnuté služby z nahraného rozpisu; dni z toho istého rozpisu nahradí. */
+function saveToApp() {
+  const covered = new Set(S.events.map((e) => e.date));
+  const limit = shiftDays(todayIso(), -120);
+  const keep = saved.rows.filter((r) => !covered.has(r.date) && r.date >= limit);
+  const add = S.rows.filter((r) => r.imp && validDate(r.date)).map((r) => ({
+    date: r.date, od: r.od, do: r.do, udalost: r.udalost, pasmo: r.pasmo, pozn: r.pozn, kdo: r.kdo, ...(r.merged ? { merged: true } : {}),
+  }));
+  const seen = new Set();
+  const rows = [...keep, ...add].filter((r) => {
+    const k = `${r.date}|${r.od}|${r.do}|${r.udalost}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).sort((a, b) => a.date.localeCompare(b.date) || a.od.localeCompare(b.od));
+  saved = { name: S.name, rows };
+  store.set(localStorage, K.saved, saved);
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  return add.length;
+}
+
+function setAddress(key, value) {
+  const v = String(value || '').trim();
+  if (v) addresses[key] = v; else delete addresses[key];
+  store.set(localStorage, K.addr, addresses);
+}
+
 // ---------- Výber kalendára ----------
 async function loadCalendars() {
   if (!signedIn()) { calendars = []; return; }
@@ -175,9 +221,11 @@ function eventBody(row) {
     .filter(([, v]) => v)
     .map(([k, v]) => `${k}: ${v}`)
     .join('\n');
+  const location = addressFor(row.udalost);
   return {
     summary: row.udalost || 'Služba / Udalosť',
     description: desc,
+    ...(location ? { location } : {}),
     start: { dateTime: t.start, timeZone: TZ },
     end: { dateTime: t.end, timeZone: TZ },
     reminders: { useDefault: false, overrides: [] },
@@ -252,7 +300,8 @@ async function runImport() {
       }
       prog.value = i + 1;
     }
-    notice(err ? 'warn' : 'ok', `Import dokončený. Vytvorené: <b>${created}</b>, preskočené duplicity: <b>${dup}</b>, chyby: <b>${err}</b>.`);
+    saveToApp();
+    notice(err ? 'warn' : 'ok', `Import dokončený. Vytvorené: <b>${created}</b>, preskočené duplicity: <b>${dup}</b>, chyby: <b>${err}</b>. Služby sú uložené aj v appke.`);
   } catch (e) {
     if (e instanceof AuthError) notice('warn', 'Prihlásenie vypršalo. Ťukni na „Prihlásiť“ a import spusti znova – už vytvorené udalosti sa preskočia.');
     else notice('err', 'Import sa nepodaril: ' + esc(e.message));
@@ -319,11 +368,72 @@ function renderList() {
 
 function renderBar() {
   const n = S.rows.filter((r) => r.imp).length;
-  $('bar').hidden = !S.events.length;
-  $('count').textContent = `Vybraných na import: ${n} z ${S.rows.length}`;
+  $('bar').hidden = view !== 'upload' || !S.events.length;
+  $('count').textContent = `Vybraných: ${n} z ${S.rows.length}`;
+  $('btnSaveApp').disabled = busy || n === 0;
   const b = $('btnImport');
   b.disabled = busy || n === 0;
-  b.textContent = signedIn() ? `Importovať ${n} do Google Kalendára` : 'Prihlásiť sa do Google a importovať';
+  b.textContent = signedIn() ? 'Aj do Google Kalendára' : 'Prihlásiť a do Kalendára';
+}
+
+function renderAgenda() {
+  const today = todayIso();
+  const tomorrow = shiftDays(today, 1);
+  const all = saved.rows;
+  const rows = showOld ? all : all.filter((r) => r.date >= today);
+  const older = all.length - all.filter((r) => r.date >= today).length;
+  $('agendaTitle').textContent = saved.name ? `Moje služby – ${saved.name}` : 'Moje služby';
+  let html = '';
+  if (!all.length) {
+    html = '<div class="banner info">Zatiaľ tu nič nie je. V záložke „Nahrať rozpis“ vyber PDF a ťukni na „Uložiť do appky“.</div>';
+  } else if (!rows.length) {
+    html = '<div class="banner info">Žiadne nadchádzajúce služby. Nahraj nový rozpis.</div>';
+  }
+  let lastDay = null;
+  rows.forEach((r) => {
+    if (r.date !== lastDay) {
+      const badge = r.date === today ? ' <span class="tag ok">Dnes</span>' : r.date === tomorrow ? ' <span class="tag">Zajtra</span>' : '';
+      html += `<div class="day${r.date < today ? ' past' : ''}">${esc(dayLabel(r.date))}${badge}</div>`;
+      lastDay = r.date;
+    }
+    const key = clientKey(r.udalost);
+    const addr = key ? addresses[key] || '' : '';
+    const time = r.od ? `${esc(r.od)}–${r.do ? esc(r.do) : '?'}` : '—';
+    let addrHtml = '';
+    if (key && addrEditing === key) {
+      addrHtml = `<div class="addr-edit">
+        <label class="field">Adresa – ${esc(key)}</label>
+        <input type="text" class="addr-input" data-key="${esc(key)}" value="${esc(addr)}" autocomplete="off" placeholder="Ulica 12, Mesto">
+        <div class="row-btns" style="margin-top:8px">
+          <button class="btn primary" type="button" data-act="addr-save" data-key="${esc(key)}">Uložiť adresu</button>
+          <button class="btn" type="button" data-act="addr-cancel">Zrušiť</button>
+        </div>
+      </div>`;
+    } else if (key && addr) {
+      addrHtml = `<div class="addr">
+        <a class="maplink" href="${esc(mapsUrl(addr))}" target="_blank" rel="noopener noreferrer">📍 ${esc(addr)}</a>
+        <button class="edit" type="button" data-act="addr-edit" data-key="${esc(key)}">Zmeniť</button>
+      </div>`;
+    } else if (key) {
+      addrHtml = `<div class="addr"><button class="edit" type="button" data-act="addr-edit" data-key="${esc(key)}">+ Pridať adresu</button></div>`;
+    }
+    html += `<div class="shift agenda${r.date < today ? ' off' : ''}">
+      <div class="when"><span class="time">${time}</span></div>
+      <div>
+        <div class="what">${esc(r.udalost || 'Služba / Udalosť')}</div>
+        <div class="tags">
+          ${r.pasmo ? `<span class="tag">Pásmo ${esc(r.pasmo)}</span>` : ''}
+          ${r.pozn ? `<span class="tag">${esc(r.pozn)}</span>` : ''}
+          ${!r.do && r.od ? '<span class="tag warn">bez konca</span>' : ''}
+        </div>
+        ${addrHtml}
+      </div>
+    </div>`;
+  });
+  if (older > 0) {
+    html += `<div class="row-btns" style="margin:14px 0"><button class="btn" type="button" data-act="toggle-old">${showOld ? 'Skryť staršie služby' : `Zobraziť aj staršie (${older})`}</button></div>`;
+  }
+  $('agendaList').innerHTML = html;
 }
 
 function renderAll() {
@@ -335,6 +445,11 @@ function renderAll() {
 
 function render() {
   renderAuth();
+  $('agenda').hidden = view !== 'agenda';
+  $('upload').hidden = view !== 'upload';
+  $('tabAgenda').classList.toggle('on', view === 'agenda');
+  $('tabUpload').classList.toggle('on', view === 'upload');
+  if (view === 'agenda') renderAgenda();
   const has = S.events.length > 0;
   $('work').hidden = !has;
   $('pickText').textContent = has ? 'Vybrať iný PDF rozpis' : 'Vybrať PDF rozpis služieb';
@@ -375,6 +490,7 @@ $('file').addEventListener('change', async (ev) => {
     }
     S = { fileName: f.name, events, name: '', rows: [] };
     setName(pickName(workerNames(events)));
+    view = 'upload';
     notice('', '');
     render();
   } catch (e) {
@@ -387,6 +503,73 @@ $('cal').addEventListener('change', (e) => { settings.calendarId = e.target.valu
 $('btnReset').addEventListener('click', () => { setName(S.name); renderList(); });
 $('btnDropOff').addEventListener('click', () => { S.rows = S.rows.filter((r) => r.imp); editing = -1; saveSession(); renderList(); });
 $('btnImport').addEventListener('click', runImport);
+$('btnSaveApp').addEventListener('click', () => {
+  const n = saveToApp();
+  view = 'agenda';
+  showOld = !saved.rows.some((r) => r.date >= todayIso());
+  notice('ok', `Uložené do appky: <b>${n}</b> služieb pre ${esc(S.name)}.`);
+  render();
+  window.scrollTo({ top: 0 });
+});
+$('tabAgenda').addEventListener('click', () => { view = 'agenda'; addrEditing = null; notice('', ''); render(); });
+$('tabUpload').addEventListener('click', () => { view = 'upload'; notice('', ''); render(); });
+
+$('agendaList').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-act]');
+  if (!t) return;
+  const act = t.dataset.act;
+  if (act === 'toggle-old') showOld = !showOld;
+  if (act === 'addr-edit') addrEditing = t.dataset.key;
+  if (act === 'addr-cancel') addrEditing = null;
+  if (act === 'addr-save') {
+    const inp = t.closest('.addr-edit').querySelector('.addr-input');
+    setAddress(t.dataset.key, inp.value);
+    addrEditing = null;
+  }
+  renderAgenda();
+  if (act === 'addr-edit') { const inp = $('agendaList').querySelector('.addr-input'); if (inp) inp.focus(); }
+});
+$('agendaList').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.classList.contains('addr-input')) { setAddress(e.target.dataset.key, e.target.value); addrEditing = null; renderAgenda(); }
+});
+
+// Záloha a obnova adries (súbor ostáva v zariadení)
+$('btnExport').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify({ addresses }, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'rozpis-adresy.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
+$('fileImport').addEventListener('change', async (ev) => {
+  const f = ev.target.files && ev.target.files[0];
+  ev.target.value = '';
+  if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    const src = data && data.addresses && typeof data.addresses === 'object' ? data.addresses : null;
+    if (!src) throw new Error('súbor neobsahuje adresy');
+    let n = 0;
+    for (const [k, v] of Object.entries(src)) if (typeof v === 'string' && v.trim() && k.trim()) { addresses[k.trim()] = v.trim(); n++; }
+    store.set(localStorage, K.addr, addresses);
+    $('dlg').close();
+    notice('ok', `Obnovených adries: <b>${n}</b>.`);
+    render();
+  } catch (e) {
+    $('dlg').close();
+    notice('err', 'Zálohu sa nepodarilo načítať: ' + esc(e.message));
+  }
+});
+$('btnClearSaved').addEventListener('click', () => {
+  saved = { name: '', rows: [] };
+  store.set(localStorage, K.saved, saved);
+  $('dlg').close();
+  notice('ok', 'Uložené služby sú vymazané. Adresy ostali.');
+  render();
+});
 $('btnAuth').addEventListener('click', () => { if (!signedIn()) signIn(); else openSettings(); });
 
 $('list').addEventListener('click', (e) => {
@@ -409,6 +592,8 @@ function openSettings() {
   $('showOrigin').textContent = location.origin;
   $('showRedirect').textContent = redirectUri();
   $('btnSignOut').hidden = !signedIn();
+  $('addrCount').textContent = String(Object.keys(addresses).length);
+  $('btnClearSaved').disabled = !saved.rows.length;
   $('dlg').showModal();
 }
 $('btnSettings').addEventListener('click', openSettings);
@@ -426,10 +611,12 @@ $('btnSave').addEventListener('click', () => {
 });
 
 // ---------- Štart ----------
-const saved = store.get(sessionStorage, K.session);
-if (saved && saved.events && saved.events.length) S = saved;
+const lastSession = store.get(sessionStorage, K.session);
+if (lastSession && lastSession.events && lastSession.events.length) S = lastSession;
+const cameFromGoogle = /(access_token|error)=/.test(location.hash || '');
 handleAuthReturn();
 if (S.events.length) saveSession();
+view = (cameFromGoogle && S.events.length) || !saved.rows.length ? 'upload' : 'agenda';
 render();
 if (signedIn()) {
   loadCalendars().then(renderCalendars).catch(() => { /* zoznam sa načíta pri importe */ });

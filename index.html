@@ -90,6 +90,19 @@
   code.copy { display: block; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; overflow-wrap: anywhere; user-select: all; }
   ol.steps { padding-left: 20px; margin: 6px 0; font-size: 14.5px; }
   ol.steps li { margin-bottom: 6px; }
+  nav.tabs { display: flex; gap: 6px; max-width: 720px; margin: 0 auto; padding: 10px 14px 0; }
+  nav.tabs button { flex: 1; border: 1px solid var(--line); background: var(--card); color: var(--muted); border-radius: 999px; padding: 9px 10px; min-height: 42px; font-weight: 600; }
+  nav.tabs button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .day.past { opacity: .6; }
+  .shift.agenda { grid-template-columns: auto 1fr; gap: 4px 14px; padding-left: 12px; }
+  .shift.agenda .time { white-space: nowrap; }
+  .shift.agenda .what { font-weight: 650; }
+  .addr { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  .addr .edit { padding-left: 0; }
+  .maplink { color: var(--accent); text-decoration: none; font-size: 15px; overflow-wrap: anywhere; padding: 6px 0; }
+  .addr-edit { margin-top: 6px; }
+  .bar .two { display: flex; gap: 8px; }
+  .bar .two .btn { flex: 1; padding-left: 8px; padding-right: 8px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -100,9 +113,20 @@
   <button id="btnSettings" type="button" aria-label="Nastavenia">Nastavenia</button>
 </header>
 
+<nav class="tabs" aria-label="Zobrazenie">
+  <button type="button" id="tabAgenda">Moje služby</button>
+  <button type="button" id="tabUpload">Nahrať rozpis</button>
+</nav>
+
 <main>
   <div id="notice"></div>
 
+  <section id="agenda" hidden>
+    <h2 id="agendaTitle" style="margin:6px 2px 0">Moje služby</h2>
+    <div id="agendaList"></div>
+  </section>
+
+  <section id="upload">
   <label class="pick" id="pick">
     <input id="file" type="file" accept="application/pdf,.pdf">
     <span id="pickText">Vybrať PDF rozpis služieb</span>
@@ -128,13 +152,17 @@
       <div class="scroll" id="allTable"></div>
     </details>
   </section>
+  </section>
 </main>
 
 <div class="bar" id="bar" hidden>
   <div class="inner">
     <div class="count" id="count"></div>
     <progress id="prog" max="1" value="0" hidden></progress>
-    <button class="btn primary" id="btnImport" type="button">Importovať do Google Kalendára</button>
+    <div class="two">
+      <button class="btn primary" id="btnSaveApp" type="button">Uložiť do appky</button>
+      <button class="btn" id="btnImport" type="button">Aj do Google Kalendára</button>
+    </div>
   </div>
 </div>
 
@@ -145,6 +173,16 @@
   <p class="muted small" style="margin:4px 0 0">Client ID je už vyplnené. Kalendár sa vyberá na hlavnej obrazovke po prihlásení.</p>
   <label class="field" for="setName">Predvolený pracovník</label>
   <input type="text" id="setName" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="BJ">
+
+  <label class="field">Adresy zákazníkov (uložených: <span id="addrCount">0</span>)</label>
+  <div class="row-btns">
+    <button class="btn" id="btnExport" type="button">Zálohovať adresy</button>
+    <label class="btn" style="text-align:center">Obnoviť zo zálohy<input id="fileImport" type="file" accept="application/json,.json" hidden></label>
+  </div>
+  <p class="muted small" style="margin:4px 0 0">Služby aj adresy sú uložené len v tomto zariadení. Záloha je súbor, ktorý si môžeš odložiť.</p>
+  <div class="row-btns" style="margin-top:10px">
+    <button class="btn danger" id="btnClearSaved" type="button">Vymazať uložené služby</button>
+  </div>
 
   <details style="margin-top:14px">
     <summary class="small">Čo zadať v Google Cloud Console</summary>
