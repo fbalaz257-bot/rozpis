@@ -10,7 +10,7 @@ const DEFAULT_CLIENT_ID = '394553646019-npjt6m9166n3e90b9n374tsb5hog7rv8.apps.go
 const DEFAULT_CALENDAR_NAME = 'Julka a Ferko';
 const CALENDAR_NAME_PREFIX = 'julka a fer'; // sedí na „Julka a Ferko“ aj „Julka a Feri“
 const API = 'https://www.googleapis.com/calendar/v3';
-const K = { settings: 'rozpis.settings', token: 'rozpis.token', session: 'rozpis.session', resume: 'rozpis.resume', state: 'rozpis.oauthState', saved: 'rozpis.saved', addr: 'rozpis.addresses' };
+const K = { settings: 'rozpis.settings', token: 'rozpis.token', session: 'rozpis.session', resume: 'rozpis.resume', state: 'rozpis.oauthState', saved: 'rozpis.saved', addr: 'rozpis.addresses', hist: 'rozpis.history' };
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -33,6 +33,11 @@ let busy = false;
 let saved = store.get(localStorage, K.saved) || { name: '', rows: [] };
 if (!Array.isArray(saved.rows)) saved = { name: '', rows: [] };
 let addresses = store.get(localStorage, K.addr) || {};
+// História: prebehnuté služby za posledný mesiac, bežne skrytá
+const HISTORY_DAYS = 31;
+let pastRows = store.get(localStorage, K.hist);
+if (!Array.isArray(pastRows)) pastRows = [];
+let histOpen = false;
 let view = 'upload'; // 'agenda' | 'upload'
 let addrEditing = null;
 let shownDay = '';
@@ -127,27 +132,46 @@ function nowParts() {
 }
 const todayIso = () => nowParts().date;
 
-/** Vymaže uložené služby z minulých dní (služba cez polnoc ostane, kým neskončí). */
+const rowKey = (r) => `${r.date}|${r.od}|${r.do}|${r.udalost}`;
+
+/** Presunie prebehnuté dni do histórie (služba cez polnoc ostane, kým neskončí); história drží mesiac. */
 function purgePast() {
   const { date: today, time } = nowParts();
   const yesterday = shiftDays(today, -1);
-  const before = saved.rows.length;
-  saved.rows = saved.rows.filter((r) => r.date >= today ||
-    (r.date === yesterday && validTime(r.od) && validTime(r.do) && r.do < r.od && time < r.do));
-  if (saved.rows.length !== before) store.set(localStorage, K.saved, saved);
-  return before - saved.rows.length;
+  const stays = (r) => r.date >= today ||
+    (r.date === yesterday && validTime(r.od) && validTime(r.do) && r.do < r.od && time < r.do);
+  const expired = saved.rows.filter((r) => !stays(r));
+  if (expired.length) {
+    saved.rows = saved.rows.filter(stays);
+    store.set(localStorage, K.saved, saved);
+  }
+  const limit = shiftDays(today, -HISTORY_DAYS);
+  const seen = new Set();
+  const next = [...pastRows, ...expired].filter((r) => {
+    if (!r || !validDate(r.date) || r.date < limit) return false;
+    const k = rowKey(r);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).sort((x, y) => y.date.localeCompare(x.date) || x.od.localeCompare(y.od));
+  if (expired.length || next.length !== pastRows.length) {
+    pastRows = next;
+    store.set(localStorage, K.hist, pastRows);
+  }
+  return expired.length;
 }
 
 /** Uloží zaškrtnuté služby z nahraného rozpisu; dni z toho istého rozpisu nahradí. */
 function saveToApp() {
   const covered = new Set(S.events.map((e) => e.date));
   const keep = saved.rows.filter((r) => !covered.has(r.date));
+  pastRows = pastRows.filter((r) => !covered.has(r.date)); // ten istý týždeň sa nahrádza aj v histórii
   const add = S.rows.filter((r) => r.imp && validDate(r.date)).map((r) => ({
     date: r.date, od: r.od, do: r.do, udalost: r.udalost, pasmo: r.pasmo, pozn: r.pozn, kdo: r.kdo, ...(r.merged ? { merged: true } : {}),
   }));
   const seen = new Set();
   const rows = [...keep, ...add].filter((r) => {
-    const k = `${r.date}|${r.od}|${r.do}|${r.udalost}`;
+    const k = rowKey(r);
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
@@ -157,7 +181,12 @@ function saveToApp() {
   purgePast();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   const today = todayIso();
-  return { total: add.length, upcoming: add.filter((r) => r.date >= today).length };
+  const limit = shiftDays(today, -HISTORY_DAYS);
+  return {
+    total: add.length,
+    upcoming: add.filter((r) => r.date >= today).length,
+    toHistory: add.filter((r) => r.date < today && r.date >= limit).length,
+  };
 }
 
 function setAddress(key, value) {
@@ -404,6 +433,42 @@ function renderBar() {
   b.textContent = signedIn() ? 'Aj do Google Kalendára' : 'Prihlásiť a do Kalendára';
 }
 
+function agendaCard(r, past) {
+  const key = clientKey(r.udalost);
+  const addr = key ? addresses[key] || '' : '';
+  const time = r.od ? `${esc(r.od)}–${r.do ? esc(r.do) : '?'}` : '—';
+  let addrHtml = '';
+  if (key && addrEditing === key && !past) {
+    addrHtml = `<div class="addr-edit">
+      <label class="field">Adresa – ${esc(key)}</label>
+      <input type="text" class="addr-input" data-key="${esc(key)}" value="${esc(addr)}" autocomplete="off" placeholder="Ulica 12, Mesto">
+      <div class="row-btns" style="margin-top:8px">
+        <button class="btn primary" type="button" data-act="addr-save" data-key="${esc(key)}">Uložiť adresu</button>
+        <button class="btn" type="button" data-act="addr-cancel">Zrušiť</button>
+      </div>
+    </div>`;
+  } else if (key && addr) {
+    addrHtml = `<div class="addr">
+      <a class="maplink" href="${esc(mapsUrl(addr))}" target="_blank" rel="noopener noreferrer">📍 ${esc(addr)}</a>
+      ${past ? '' : `<button class="edit" type="button" data-act="addr-edit" data-key="${esc(key)}">Zmeniť</button>`}
+    </div>`;
+  } else if (key && !past) {
+    addrHtml = `<div class="addr"><button class="edit" type="button" data-act="addr-edit" data-key="${esc(key)}">+ Pridať adresu</button></div>`;
+  }
+  return `<div class="shift agenda${past ? ' off' : ''}">
+    <div class="when"><span class="time">${time}</span></div>
+    <div>
+      <div class="what">${esc(r.udalost || 'Služba / Udalosť')}</div>
+      <div class="tags">
+        ${r.pasmo ? `<span class="tag">Pásmo ${esc(r.pasmo)}</span>` : ''}
+        ${r.pozn ? `<span class="tag">${esc(r.pozn)}</span>` : ''}
+        ${!r.do && r.od ? '<span class="tag warn">bez konca</span>' : ''}
+      </div>
+      ${addrHtml}
+    </div>
+  </div>`;
+}
+
 function renderAgenda() {
   purgePast();
   const today = todayIso();
@@ -413,49 +478,27 @@ function renderAgenda() {
   $('agendaTitle').textContent = saved.name ? `Moje služby – ${saved.name}` : 'Moje služby';
   let html = '';
   if (!rows.length) {
-    html = '<div class="banner info">Žiadne nadchádzajúce služby. V záložke „Nahrať rozpis“ vyber PDF a ťukni na „Uložiť do appky“. Minulé dni sa o polnoci mažú.</div>';
+    html = '<div class="banner info">Žiadne nadchádzajúce služby. V záložke „Nahrať rozpis“ vyber PDF a ťukni na „Uložiť do appky“.</div>';
   }
   let lastDay = null;
   rows.forEach((r) => {
     if (r.date !== lastDay) {
       const badge = r.date === today ? ' <span class="tag ok">Dnes</span>' : r.date === tomorrow ? ' <span class="tag">Zajtra</span>' : '';
-      html += `<div class="day${r.date < today ? ' past' : ''}">${esc(dayLabel(r.date))}${badge}</div>`;
+      html += `<div class="day">${esc(dayLabel(r.date))}${badge}</div>`;
       lastDay = r.date;
     }
-    const key = clientKey(r.udalost);
-    const addr = key ? addresses[key] || '' : '';
-    const time = r.od ? `${esc(r.od)}–${r.do ? esc(r.do) : '?'}` : '—';
-    let addrHtml = '';
-    if (key && addrEditing === key) {
-      addrHtml = `<div class="addr-edit">
-        <label class="field">Adresa – ${esc(key)}</label>
-        <input type="text" class="addr-input" data-key="${esc(key)}" value="${esc(addr)}" autocomplete="off" placeholder="Ulica 12, Mesto">
-        <div class="row-btns" style="margin-top:8px">
-          <button class="btn primary" type="button" data-act="addr-save" data-key="${esc(key)}">Uložiť adresu</button>
-          <button class="btn" type="button" data-act="addr-cancel">Zrušiť</button>
-        </div>
-      </div>`;
-    } else if (key && addr) {
-      addrHtml = `<div class="addr">
-        <a class="maplink" href="${esc(mapsUrl(addr))}" target="_blank" rel="noopener noreferrer">📍 ${esc(addr)}</a>
-        <button class="edit" type="button" data-act="addr-edit" data-key="${esc(key)}">Zmeniť</button>
-      </div>`;
-    } else if (key) {
-      addrHtml = `<div class="addr"><button class="edit" type="button" data-act="addr-edit" data-key="${esc(key)}">+ Pridať adresu</button></div>`;
-    }
-    html += `<div class="shift agenda${r.date < today ? ' off' : ''}">
-      <div class="when"><span class="time">${time}</span></div>
-      <div>
-        <div class="what">${esc(r.udalost || 'Služba / Udalosť')}</div>
-        <div class="tags">
-          ${r.pasmo ? `<span class="tag">Pásmo ${esc(r.pasmo)}</span>` : ''}
-          ${r.pozn ? `<span class="tag">${esc(r.pozn)}</span>` : ''}
-          ${!r.do && r.od ? '<span class="tag warn">bez konca</span>' : ''}
-        </div>
-        ${addrHtml}
-      </div>
-    </div>`;
+    html += agendaCard(r, false);
   });
+  if (pastRows.length) {
+    html += `<div class="row-btns hist-toggle"><button class="btn" type="button" data-act="toggle-hist">${histOpen ? 'Skryť históriu' : `História – posledný mesiac (${pastRows.length})`}</button></div>`;
+    if (histOpen) {
+      lastDay = null;
+      pastRows.forEach((r) => {
+        if (r.date !== lastDay) { html += `<div class="day past">${esc(dayLabel(r.date))}</div>`; lastDay = r.date; }
+        html += agendaCard(r, true);
+      });
+    }
+  }
   $('agendaList').innerHTML = html;
 }
 
@@ -529,19 +572,21 @@ $('btnImport').addEventListener('click', runImport);
 $('btnSaveApp').addEventListener('click', () => {
   const n = saveToApp();
   view = 'agenda';
-  const past = n.total - n.upcoming;
-  if (!n.upcoming) notice('warn', 'Tento rozpis je celý v minulosti, takže v Mojich službách z neho nič neostalo (minulé dni sa mažú).');
-  else notice('ok', `Uložené do appky: <b>${n.upcoming}</b> služieb pre ${esc(S.name)}${past ? ` (ďalších ${past} už prebehlo)` : ''}.`);
+  const histNote = n.toHistory ? ` Prebehnuté služby (${n.toHistory}) sú v Histórii.` : '';
+  if (!n.upcoming && !n.toHistory) notice('warn', 'Tento rozpis je starší ako mesiac, takže sa z neho nič neuložilo.');
+  else if (!n.upcoming) notice('warn', `Tento rozpis je celý v minulosti.${histNote}`);
+  else notice('ok', `Uložené do appky: <b>${n.upcoming}</b> služieb pre ${esc(S.name)}.${histNote}`);
   render();
   window.scrollTo({ top: 0 });
 });
-$('tabAgenda').addEventListener('click', () => { view = 'agenda'; addrEditing = null; notice('', ''); render(); });
+$('tabAgenda').addEventListener('click', () => { view = 'agenda'; addrEditing = null; histOpen = false; notice('', ''); render(); });
 $('tabUpload').addEventListener('click', () => { view = 'upload'; notice('', ''); render(); });
 
 $('agendaList').addEventListener('click', (e) => {
   const t = e.target.closest('[data-act]');
   if (!t) return;
   const act = t.dataset.act;
+  if (act === 'toggle-hist') histOpen = !histOpen;
   if (act === 'addr-edit') addrEditing = t.dataset.key;
   if (act === 'addr-cancel') addrEditing = null;
   if (act === 'addr-save') {
@@ -588,9 +633,11 @@ $('fileImport').addEventListener('change', async (ev) => {
 });
 $('btnClearSaved').addEventListener('click', () => {
   saved = { name: '', rows: [] };
+  pastRows = [];
   store.set(localStorage, K.saved, saved);
+  store.set(localStorage, K.hist, pastRows);
   $('dlg').close();
-  notice('ok', 'Uložené služby sú vymazané. Adresy ostali.');
+  notice('ok', 'Uložené služby aj história sú vymazané. Adresy ostali.');
   render();
 });
 $('btnAuth').addEventListener('click', () => { if (!signedIn()) signIn(); else openSettings(); });
@@ -616,7 +663,7 @@ function openSettings() {
   $('showRedirect').textContent = redirectUri();
   $('btnSignOut').hidden = !signedIn();
   $('addrCount').textContent = String(Object.keys(addresses).length);
-  $('btnClearSaved').disabled = !saved.rows.length;
+  $('btnClearSaved').disabled = !saved.rows.length && !pastRows.length;
   $('dlg').showModal();
 }
 $('btnSettings').addEventListener('click', openSettings);
